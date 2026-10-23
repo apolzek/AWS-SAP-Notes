@@ -9,10 +9,22 @@
     - Speaker identification
 - In addition we can configure custom vocabularies and configure language models according to our use-case
 - The product is pay as we use per second of transcribed audio
-- Products comes in different flavors such as Transcribe, Transcribe Medical and Transcribe Call Analytics
+- Products comes in different flavors such as Transcribe, Transcribe Medical and Transcribe Call Analytics (and **AWS HealthScribe** - generative clinical notes from patient-clinician conversations)
 - Amazon Transcribe use cases:
     - Full text indexing of audio to allow searching
     - Create meeting notes
     - Generate subtitles/captions and transcripts
     - With Call Analytics we can ingest phone calls to do analytics such as characteristics, summarization, categories and sentiment analysis
 - Can be integrated with our applications with APIs as well it integrates with other AWS ML services
+- Modes: **batch** (audio/video files in S3 - MP3, MP4, WAV, FLAC, Ogg, AMR, WebM; async jobs) and **streaming** (real-time via HTTP/2 or WebSocket - live captions, call centers)
+- Features:
+    - Automatic language identification (incl. multi-language audio)
+    - Speaker diarization (who spoke when) and channel identification (agent vs customer on separate channels)
+    - **PII redaction** in transcripts (and audio for Call Analytics) - SSN, credit card, names, etc.
+    - Vocabulary filtering (mask/remove profanity or unwanted words), **toxicity detection** (audio-based)
+    - **Custom vocabularies** (domain terms, product names) and **custom language models** (trained on domain text for higher accuracy)
+    - Subtitles output (SRT, WebVTT), word-level timestamps and confidence
+- **Call Analytics**: sentiment, talk time/non-talk time, interruptions, issue detection, categories, generative call summarization - post-call and real-time; Amazon Connect Contact Lens provides this natively for Connect
+- Security: KMS encryption of output, VPC endpoints, data opt-out from service improvement (AI services opt-out policies in AWS Organizations) <span style="color: red;">EXAM</span>
+- Pricing: per second of audio (15-second minimum per request), tiered
+- Typical pipeline: S3 audio -> Transcribe -> Translate -> Comprehend -> OpenSearch/QuickSight (search and analytics over calls)

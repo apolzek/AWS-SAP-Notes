@@ -74,10 +74,88 @@
 ## SG - Security Groups
 
 - Security Groups are stateful firewalls, meaning they detect response traffic to a request and they automatically allow that traffic
-- SGs do not have explicit **DENY** rules, they can be used to block bad actors (use NACLs for this)
+- SGs do not have explicit **DENY** rules, they can not be used to block bad actors (use NACLs for this)
 - SGs support IP/CIDR rules and also allow to reference logical resources
 - SGs are attached to Elastic Network Interfaces (ENI), when we attach a SG to an EC2, the SG will be attached to the primary ENI
 - SGs are capable to reference logical resources, ex. other security groups or self referencing
+- SG referencing across VPCs: works over **VPC peering (same Region)** and **Transit Gateway (same Region, inbound rules, Sep 2024)**; also for shared VPC participants
+- SGs can reference **managed prefix lists** (AWS-managed, e.g. CloudFront origin-facing, or customer-managed)
+- Limits: 60 inbound + 60 outbound rules per SG (adjustable), 5 SGs per ENI (up to 16), rules x SGs per ENI <= 1,000
+- NACL limits: 20 rules each direction (up to 40). NACLs only see IPs => remember ephemeral ports (1024-65535) for return traffic
+- NACLs don't filter traffic to the VPC Resolver (.2), instance metadata (169.254.169.254), Time Sync, Windows license activation
+
+## VPC Sizing and Addressing
+
+- VPC IPv4 CIDR: between `/16` and `/28`; up to 5 CIDRs per VPC by default (primary + secondary, up to 50)
+- **5 reserved IPs per subnet**: network address, +1 VPC router, +2 DNS, +3 reserved for future use, broadcast (last)
+- Secondary CIDRs can be added later (e.g. from `100.64.0.0/10` for EKS pods) but cannot overlap; CIDR of an existing subnet cannot be changed
+- Plan non-overlapping ranges across accounts/Regions/on-premises => required for peering, TGW, DX, VPN
+
+## Public IPv4 Pricing (Feb 2024)
+
+- Since **Feb 1, 2024** every public IPv4 address is charged **$0.005/hour** (~$3.6/month), whether in use or idle: EIPs (attached or not), auto-assigned public IPs, NAT gateway, ALB/NLB nodes, etc.
+- BYOIP addresses are not charged
+- **Public IP Insights** (VPC IPAM, free tier) shows public IPv4 usage
+- Cost optimizations: IPv6 (dual-stack/IPv6-only), private subnets + NAT/ALB, EC2 Instance Connect Endpoint instead of public bastions, VPC endpoints
+
+## Amazon VPC IP Address Manager (IPAM)
+
+- Plan, allocate, track and audit IP addresses across accounts and Regions (integrates with **AWS Organizations**, delegated admin)
+- **Pools** hierarchy (top-level => Regional => per environment/account) with allocation rules (min/max/default netmask, required tags); share pools with RAM
+- VPCs can be created from an IPAM pool (`--ipv4-ipam-pool-id`) => guaranteed non-overlapping CIDRs
+- Monitors compliance/overlap, historical IP usage, BYOIP (IPv4/IPv6) management, Amazon-provided contiguous IPv6 blocks
+- Tiers: **Free tier** (Public IP Insights, basic) and **Advanced tier** (paid, per active IP)
+- Exam trigger: "prevent overlapping CIDRs across hundreds of accounts" => IPAM pools + SCP/IAM condition requiring IPAM
+
+## VPC Block Public Access (Nov 2024)
+
+- Account/Region-level setting that blocks internet traffic through IGWs and egress-only IGWs for all VPCs, overriding route tables/SGs
+- Modes: **bidirectional** (block in and out) or **ingress-only** (allow outbound via NAT/EIGW)
+- **Exclusions** per VPC or subnet (bidirectional or egress-only), 50 per account per Region
+- Centrally enforced with **AWS Organizations declarative policies**
+- Use Network Access Analyzer / Reachability Analyzer to assess impact before enabling
+
+## VPC Encryption Controls (2025)
+
+- Audit (**monitor mode**) and enforce (**enforce mode**) **encryption in transit** for all traffic within and across VPCs in a Region
+- AWS uses Nitro hardware encryption between instances; enforce mode blocks creation of resources that cannot encrypt (non-Nitro instances, etc.)
+- Existing VPCs: monitor mode first (flow logs show encryption status), fix non-compliant resources, then enforce. New VPCs can start in enforce mode
+- Some gateways can be excluded (IGW, NAT GW, VGW, etc.); TGW supports it for attached VPCs
+- Pricing: free during preview, **charged per non-empty VPC-hour since Mar 1, 2026**
+- Exam trigger: "prove/enforce encryption in transit for compliance (HIPAA, PCI, FedRAMP) inside VPCs without managing TLS everywhere"
+
+## NAT Gateway
+
+- Managed SNAT for IPv4 private subnets; zonal resource => one per AZ for HA (avoid cross-AZ data and AZ dependency)
+- Scales 5 Gbps => 100 Gbps; up to 8 IPs per NAT GW (each IP: 55,000 simultaneous connections per unique destination)
+- Public NAT GW (needs EIP, in public subnet) vs **Private NAT GW** (no internet; SNAT for overlapping/non-routable CIDRs towards TGW/VGW)
+- **Regional NAT gateway** (Nov 2025): one NAT gateway for the whole VPC that automatically expands/contracts across AZs where we have workloads; no public subnet needed; automatic or manual IP management; simpler route tables
+- Pricing: per hour + **per GB processed** => use gateway endpoints for S3/DynamoDB to avoid NAT processing charges
+- NAT64 + DNS64 let IPv6-only workloads reach IPv4 destinations
+
+## VPC Peering
+
+- Private 1:1 connection between 2 VPCs (same/different account, same/different Region), on AWS backbone, encrypted inter-Region
+- **Not transitive**: A-B and B-C does not give A-C; no edge-to-edge routing (cannot use peer's IGW, NAT GW, VGW/DX/VPN, gateway endpoints)
+- No overlapping CIDRs; routes must be added on both sides; 50 active peerings per VPC (up to 125)
+- No bandwidth limit, no data processing charge (only data transfer; free within the same AZ) => cheapest for high-volume pairs
+- Same Region: SG referencing supported; jumbo frames (9001) supported intra-Region
+- DNS resolution of peer's public hostnames to private IPs must be enabled on the peering
+
+## VPC Sharing (RAM)
+
+- Owner account shares **subnets** with participant accounts in the same Organization; participants launch resources into shared subnets
+- Owner manages VPC, subnets, route tables, NACLs, gateways; participants manage their own resources and SGs
+- Fewer VPCs, fewer TGW attachments, lower cost; billing stays with participants for their resources
+- Limit: 100 participant accounts per VPC
+
+## VPC Observability and Troubleshooting
+
+- **VPC Flow Logs**: VPC/subnet/ENI (also TGW) => CloudWatch Logs, S3, Firehose. Metadata only (no payload), not real time. Custom format fields (e.g. `pkt-srcaddr`, `tcp-flags`, encryption status)
+- **Traffic Mirroring**: copy actual packets from ENIs to an NLB/GWLB/ENI target for IDS/deep inspection
+- **Reachability Analyzer**: static config analysis "can A reach B?" (no packets sent)
+- **Network Access Analyzer**: find unintended network access paths against requirements (e.g. "no internet path to DB subnets")
+- **VPC Route Server** (2025): BGP peering from appliances in the VPC to dynamically update VPC route tables (floating routes for active/standby appliances)
 
 ## AWS Local Zones
 
@@ -93,6 +171,7 @@
 - Local Zones can be considered as one additional AZ (but near our location => lower latency), they don't have builtin AZ
 - Not all AWS products support Local Zones. From the ones which do support, many of them are opt-in an also many of them have limitations
 - Local Zones should be used when we need the highest performance
+- Related edge options: **Wavelength Zones** (inside 5G telco networks, carrier gateway), **Outposts** (AWS racks/servers on-premises, needs reliable connection to the parent Region)
 
 ## Advanced VPC Routing
 
@@ -102,7 +181,7 @@
 - RT can associated with an internet gateway (IGW) or virtual private gateway (VGW)
 - IPv4/6 are handled separately within a RT
 - Routes send traffic based on a destination to a target
-- Route tables have a maximum of 50 static routes and 100 dynamic routes
+- Route tables have a maximum of 500 non-propagated (static) routes by default (adjustable up to 1,000) and **100 propagated (dynamic) routes (hard limit)** - if on-premises has more prefixes, summarize or advertise a default route
 - When a traffic arrives to an interface (IGW, VGW), it is matched to the relevant route table
 - All routes from a route table are evaluated - highest-priority matching is used
 - Route tables can contain 2 types of routes:
@@ -128,7 +207,7 @@
 
 - IPv6 addresses are all publicly routable
 - NAT is not used for IPv6, IPv6 does not need network address translation simply because of the huge number of available IPv6 addresses
-- IPv6 needs to be manually enabled on a VPC. We can either bring our own IP address in a VPC or utilize an AWS provided range
+- IPv6 needs to be manually enabled on a VPC. We can either bring our own IP address in a VPC, utilize an AWS provided range, or allocate from IPAM
 - In case of AWS provided IPv6 addresses, AWS will allocate an uniq /56 range to the VPC. This range will be entirely uniq and all addresses will be publicly routable
 - If we chose to allocate an IP range for a VPC, AWS will use a hex pair to uniquely allocate IP addresses to the subnets
 - Routing is handled separately for the IPv6 addresses, we will have IPv4 routes and IPv6 routes
@@ -139,6 +218,8 @@
 - We can enable IPv6 on specific subnets only
 - We can point IPv6 traffic to internet gateway and egress only internet gateways as well
 - Not every service in AWS supports IPv6!
+- **IPv6-only subnets** are possible (Nitro instances); use DNS64 + NAT64 on the NAT gateway to reach IPv4-only destinations
+- IPv6 is a common answer to public IPv4 cost and IPv4 exhaustion (e.g. large EKS clusters)
 
 ## Advanced VPC Structure - How many AZs for HA?
 

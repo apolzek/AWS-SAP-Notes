@@ -7,3 +7,18 @@
 - The staging area is designed to reduce costs by using affordable storage and minimal compute
 - AWS Elastic Disaster Recovery automatically converts our servers to boot and run natively on AWS when we launch instances for drills or recovery
 - If we need to recover applications, you can launch recovery instances on AWS within minutes
+- Successor of **CloudEndure Disaster Recovery** (CloudEndure DR is retired - DRS is the AWS-native replacement)
+- Sources: physical servers, VMware/Hyper-V VMs, other clouds, and EC2 instances in another AWS Region or AZ (cross-region / cross-AZ DR)
+- Continuous **block-level** replication (asynchronous) of all disks -> RPO of **seconds**; RTO typically **5 - 20 minutes** <span style="color: red;">EXAM</span>
+- Staging area: lightweight replication servers (small EC2 instances) + low-cost EBS volumes (snapshots) in a staging subnet; full-size recovery instances are only launched for drills or recovery
+- **Point-in-time recovery**: snapshots retained (e.g. every 10 min for the last hour, hourly for 24h, daily up to 1 year retention window configurable) - recover to a moment *before* ransomware/corruption
+- Launch settings: EC2 launch templates per source server (instance type right-sizing, subnet, SG, IAM role), post-launch actions (SSM documents)
+- **Drills**: non-disruptive test launches without impacting replication; recovery instances can be terminated after the test
+- **Failback**: after the disaster, replicate back from AWS to the original on-prem (Failback Client) or to the original region (cross-region failback), then reverse replication
+- Replication traffic over the internet, VPN, Direct Connect or VPC peering; TCP 1500 from source agent to replication servers, data encrypted in transit; can use private IPs
+- Pricing: per replicating source server per hour (~$0.028/h) + EC2/EBS/snapshot costs of the staging area and recovery instances
+- DRS vs alternatives:
+    - **AWS MGN (Application Migration Service)**: same replication engine but for *one-time migration* (rehost), not ongoing DR
+    - **AWS Backup**: backup & restore strategy, RPO hours; DRS = pilot-light-like with server-level replication
+    - **Database-native replication** (Aurora Global, DynamoDB global tables): better for managed databases; DRS is for servers (incl. self-managed DBs on EC2/on-prem)
+- Exam: "on-premises servers (any app, incl. databases on VMs) must fail over to AWS with RPO in seconds and RTO in minutes, minimal cost" -> Elastic Disaster Recovery <span style="color: red;">EXAM</span>

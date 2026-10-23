@@ -1,7 +1,7 @@
 # DX - Direct Connect
 
 - It is a physical entry point into the AWS network
-- It is a physical fibre connection (1, 10, or 100 Gbps) through which we can access AWS services without sending traffic through the public internet
+- It is a physical fibre connection (1, 10, 100 or 400 Gbps dedicated) through which we can access AWS services without sending traffic through the public internet
 - The connection is between the business premises => DX Location => AWS Region
 - When we order a DX connection, what we order is actually a Port Allocation at a DX Location
 - The port has 2 costs:
@@ -9,29 +9,35 @@
   - Outbound data transfer, inbound data transfer is free of charge
 - In order to get a Direct Connect we have to create a connection (logical entity) inside an AWS account. This connection will have an unique ID
 - Provisioning time: weeks/months of extra time
-- DX provides low and consistent latency + high speeds (1/10/100 Gbps)
+- DX provides low and consistent latency + high speeds (1/10/100/400 Gbps)
 - In the DX location we will have to install a cross-connect (physical cable) in order to connect our own network to the AWS network
 - DX has connectivity to AWS Private Services (VPCs) and Public Services but NOT to the Internet.
+- DX is **NOT encrypted** by default => MACsec (L2) or IPsec VPN on top (public VIF or private IP VPN over transit VIF)
+- Data transfer out over DX is charged at a lower rate than over the internet => DX can also be a cost optimization for large egress volumes
 
 ![DX Concepts](images/DXConcepts.png)
 
 ## DX Physical Connection Architecture
 
 - A Direct Connect is a physical port allocated at a DX Location
-- This physical port provides 1, 10 or 100 Gbps speed
+- This physical port provides 1, 10, 100 or 400 Gbps speed (400 Gbps at select locations)
 - DX can be ordered directly from AWS or through partners (wider range of speeds, with less options)
+- **Dedicated connection**: physical port dedicated to us, 1/10/100/400 Gbps, ordered from AWS (console), supports up to 51 VIFs (50 public/private + up to 4 transit within the 51), LAG, MACsec
+- **Hosted connection**: provisioned by an AWS Direct Connect Partner on their port, 50 Mbps up to 25 Gbps, **only 1 VIF per hosted connection** (exam trap: need several VIFs => multiple hosted connections or a dedicated connection). Capacity changes may require a new connection
+- **Hosted VIF**: a VIF created by another account (e.g. partner or network account) and accepted in our account
   Things that are needed to be used on the router on our side in order to work with DX:
 - The DX port requires single-mode fibre, NO copper cable connection supported
 - Depending on the speed we order we will interface with DX using the following standards:
   - **1000BASE-LX** (1310 nm) Transreceiver for 1 Gbps
   - **10GBASE-LR** (1310 nm) Transreceiver for 10 Gbps
   - **100GBASE-LR4** - 100 Gbps
+  - **400GBASE-LR4** - 400 Gbps
 - Auto-Negotiation should be disabled for the connection
 - We configure the port speed, full-duplex should be manually set on the network connection
 - Our router within the DX location should support Border Gateway Protocol (BGP) and BGP MD5 Authentication
 - Optional configurations:
   - MACsec
-  - Bidirectional Forwarding Detection (BFD)
+  - Bidirectional Forwarding Detection (BFD) - asynchronous BFD is enabled by default on AWS side, we need to enable it on our router for fast failover
 
 ## Direct Connect - MACsec
 
@@ -52,7 +58,9 @@
   - **MACsec encapsulation**: MACSec modifies Ethernet frames by inserting two tags: 16 bytes MACsec tag & 16 bytes of Integrity Check Value (ICV).
   - **MACSec Key Agreement** protocol: manages discovery, authentication and key generation
   - **Cipher Suite**: controls how the data is encrypted: algorithm, packets per key, key rotation
+- MACsec is supported on **dedicated** connections of **10, 100 and 400 Gbps** at select DX locations (not on 1 Gbps or hosted connections). We may need to order a new MACsec-capable port
 - MACsec can be defined either on a DX connection or on a Link Aggregation Group (LAG)
+- Encryption mode: `should_encrypt` / `must_encrypt` / `no_encrypt`
 - Configuring MACsec: we associate a CAK/CKN pair with the connection on both the AWS DX router(s) and customer side's router
 - It is possible to extend MACsec from the DX location ot the customer side
 - This requires a dedicated physical extension of the cross connect to the business premises; this type of extension requires Layer 2 Adjacency
@@ -87,7 +95,8 @@ MACsec is way faster, but not end-to-end like IPSec (VPN).
   - Public VIF: used to connect to Public Zone Service
   - Transit VIF: allow integration between DX and Transit Gateways
     ![DX VIFs - BGP Session + VLAN](images/DXBGPSessonVLAN.png)
-- A single dedicated DX can have in total 50 public/private VIFs, as well as 1 Transit VF
+- A single dedicated DX can have in total 50 public/private VIFs, plus transit VIFs: max **4 transit VIFs**, all within a hard limit of **51 VIFs** per connection (originally only 1 transit VIF)
+- A hosted connection supports only 1 VIF (of any type)
 - Hosted VIFs: we can share VIFs with other AWS accounts. Can be connected to a virtual private gateway in a VPC of the other account
 
 ## Private VIFs
@@ -104,10 +113,10 @@ MACsec is way faster, but not end-to-end like IPSec (VPN).
   - Chose VGW (default) or Direct Connect Gateway
   - Chose who owns the interface (this account or another account)
   - Choose a VLAN id (= 802.1Q part of the Ethernet Frame) which needs to match the customer config
-  - We need to enter the BGP ASN of on-premises (public or private). If private use 64512 to 65535
+  - We need to enter the BGP ASN of on-premises (public or private). If private use 64512 to 65534 (or long ASN 4200000000 to 4294967294)
   - We can choose IPs or auto generate them
   - AWS will advertise the VPC CIDR range and the BGP Peer IPs (`/30`)
-  - We can advertise default or specific corporate prefixes (**max 100** - this is HARD limit, the interface will go into an idle state)
+  - We can advertise default or specific corporate prefixes (**max 100** per address family by default; if exceeded the BGP session goes into an idle state. Can be raised up to 1,000 with DX prefix controls - otherwise summarize or advertise a default route)
 - Private VIFs architecture:
   ![Private VIFs Architecture](images/DXPrivateVIFS.png)
 - Key learning objectives:
@@ -160,11 +169,16 @@ MACsec is way faster, but not end-to-end like IPSec (VPN).
 - We integrate with it on the on-premises side by creating a private VIF and associate this with a DX Gateway instead of the Virtual Private Gateway (VGW). This integrates the on-premises router with the DX Gateway
 - On the AWS side we create VGW associations in any VPC in any AWS regions
 - DX gateways allow to route through them to the on-premises environments and vice-versa. They don't allow VPCs connected to the gateway to communicate with each other
-- We can have 10 VGW attachments per DX Gateway
-- 1 DX connection can have up to 50 private VIFs, each of which support 1 DX gateway and 1 DX gateway supports 10 VGW association => we can connect up to 500 VPCs
+- We can have **20 VGW associations per DX Gateway** (was 10), and up to 30 private/transit VIFs per DX Gateway
+- 1 DX connection can have up to 50 private VIFs, each of which support 1 DX gateway and 1 DX gateway supports 20 VGW associations => we can connect up to 1,000 VPCs per connection
+- DX Gateways are free, global, 200 per account; the DXGW must have an ASN different from the on-premises ASN
+- **Allowed prefixes**: on each DXGW association we define which prefixes are advertised to on-premises (for VGW associations defaults to the VPC CIDR; for TGW associations we must list them explicitly, max 200 per TGW)
+- No overlapping CIDRs among VPCs associated to the same DXGW
 - DX gateway don't have a cost, we have cost for data transit only
   ![DX Gateway Architecture](images/DirectConnectGateway3.png)
-- Cross-account DX Gateways: multiple account can create association proposal for a DX gateway
+- Cross-account DX Gateways: multiple account can create association proposal for a DX gateway; the DXGW owner accepts it (and can override allowed prefixes)
+- **SiteLink** (2021): enable on private/transit VIFs to send traffic **between on-premises sites** over the AWS backbone through the DXGW (bypassing AWS Regions). Charged per hour per VIF + data transfer. Use case: replace a private WAN between branches/data centers that already have DX
+- DXGW can also attach to an **AWS Cloud WAN** core network (2024) via transit VIFs (up to 5,000 prefixes advertised to on-premises)
 
 ## Transit VIFs and TGW
 
@@ -174,8 +188,8 @@ MACsec is way faster, but not end-to-end like IPSec (VPN).
 - This architecture also works within peered TGWs
 - DX-TGW Architecture:
   ![DX-TGW Architecture](images/DXGateway4.png)
-- A DX supports up to 50 public and private VIFs and only 1 Transit VIF
-- We can connect up to 3 Transit Gateways to a Direct Connect Gateway
+- A DX supports up to 50 public and private VIFs and up to 4 Transit VIFs (51 VIFs total)
+- We can connect up to 6 Transit Gateways to a Direct Connect Gateway (was 3)
 - An individual DX gateway can be used with VPCs and private VIFs or with Transit Gateways and transit VIFs, **NOT BOTH** at the same time!
 - Consideration:
   - DX gateway does not route between its attachments, this is why the peering connection between TGWs is required
@@ -203,11 +217,54 @@ MACsec is way faster, but not end-to-end like IPSec (VPN).
 
 - LAG: allows to take multiple physical connections and configure them to act as one by using the LACP (Link Aggregation Control Protocol)
 - From speed perspective a LAG can have:
-  - 2 ports, each 100 Gbps
-  - 4 ports, the speed of each being less than 100 Gbps
-- We can create a LAG with the maximum speed of 200 Gbps
+  - 2 ports, each 100 Gbps or 400 Gbps
+  - 4 ports, the speed of each being less than 100 Gbps (1 or 10 Gbps)
+- We can create a LAG with the maximum speed of 800 Gbps (2 x 400 Gbps), 200 Gbps with 100 Gbps ports
 - LAG do provide resilience, although AWS does not market them as such. They do not provide any resilience regarding hardware failure or the failure of entire location
 - LAGs use an Active/Active architecture, maximum 4 connection can be part of the LAG
 - All connections must have the same speed and terminate at the same DX location
 - A LAG has an attribute called `minimumLinks`: the LAG is active as long as the number of working connections is greater or equal to this value
   ![DX LAG](images/DirectConnectLAG.png)
+- LAGs are dedicated connections only (not hosted); we can have 10 LAGs per Region
+
+## Direct Connect Resiliency Toolkit and SLA
+
+- The **DX Resiliency Toolkit** (console wizard) offers models:
+  - **Maximum Resiliency**: 2 connections at each of 2 DX locations (4 connections, separate devices) - SLA **99.99%**. For critical workloads
+  - **High Resiliency**: 1 connection at each of 2 DX locations - SLA **99.9%**
+  - **Development and Test**: 2 connections on separate devices at 1 location - no SLA for location failure
+- **Failover testing**: we can bring down the BGP sessions of a VIF for a defined time to validate failover
+- Cheaper backup option: DX primary + Site-to-Site VPN backup (VPN routes are less preferred than DX routes for the same prefix). Watch the bandwidth difference: a 10 Gbps DX can't fail over to a 1.25 Gbps VPN tunnel without degradation
+
+## Routing and BGP over DX (summary, see bgp.md)
+
+- Active/passive from AWS => on-premises: more specific prefixes on the primary, or local preference communities `7224:7300` (high) / `7224:7100` (low) on private/transit VIFs. Local pref is evaluated before AS_PATH
+- AS_PATH prepending also works (lower priority than local preference)
+- Public VIF scope communities: `7224:9100` local Region, `7224:9200` continent, `7224:9300` global (default)
+- DX prefers DX locations whose **associated Region** is the destination Region by default
+- Public VIF: we must own the public prefixes (RIR registered); AWS filters traffic whose source is not from our advertised prefixes
+
+## Key DX Quotas (exam numbers)
+
+| Item | Limit |
+|---|---|
+| Private/public VIFs per dedicated connection | 50 (hard) |
+| Transit VIFs per dedicated connection | 4 (within 51 total) |
+| VIFs per hosted connection | 1 |
+| Prefixes from on-premises per private/transit VIF BGP session | 100 (up to 1,000 with prefix controls) |
+| Prefixes from on-premises per public VIF | 1,000 |
+| VGWs per DX gateway | 20 |
+| TGWs per DX gateway | 6 |
+| DX gateways per TGW | 20 |
+| VIFs per DX gateway | 30 |
+| Prefixes from TGW to on-premises per transit VIF | 200 |
+| Connections per LAG | 4 (<100G) / 2 (100G, 400G) |
+
+## Exam Tips
+
+- "Need connectivity next week" => VPN now, DX later (DX takes weeks/months)
+- "Access VPCs in multiple Regions over one DX" => DX Gateway (private VIF) or DXGW + TGW (transit VIF)
+- "Access S3 / public AWS endpoints over DX" => public VIF (or private VIF/transit VIF + S3 interface endpoint)
+- "Encrypt DX at line rate 10/100 Gbps" => MACsec; "end-to-end encryption" => IPsec VPN over DX
+- "VPC to VPC through DXGW" => not supported, use TGW/peering
+- "Branch-to-branch over AWS backbone using DX" => SiteLink

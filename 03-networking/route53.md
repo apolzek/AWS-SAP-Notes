@@ -18,7 +18,7 @@
 ## DNS Root
 
 - DNS is structures like a tree, DNS root is at the top of the tree
-- DNS root is hosted in 13 special nameservers, known as DNS Root Servers
+- DNS root is hosted in 13 special nameservers, known as DNS Root Servers (13 identities `a`-`m`, operated by 12 organizations, served by hundreds of anycast instances)
 - Root hints file: an OS file containing the address of all root servers
 - Authority: when something is trusted in DNS, example root hints file
 - Delegation: trusted authorities can delegate a part of themselves to other entities, those entities becoming authoritative for the part delegated
@@ -30,6 +30,8 @@
   - Register domains
   - Can host zone files on managed nameservers
 - It is a global service, its database is distributed globally and resilient
+- Data plane (DNS query answering) has a **100% availability SLA**; the control plane (record changes, API) lives in `us-east-1` => for DR, prefer designs that rely on data plane features (health checks, ARC routing controls) instead of changing records during an incident
+- **Accelerated recovery** (Nov 2025, opt-in per public hosted zone, free): if `us-east-1` is impaired, record changes resume from `us-west-2` within ~60 min. Must be enabled before the event; public hosted zones only
 
 ## Register a Domain
 
@@ -72,7 +74,10 @@
 ## Private Hosted Zones
 
 - Similar to a public hosted zone except it can not be accessed from the public internet
-- They are associated with VPCs from AWS and it only can be shared with VPCs from the account. Cross account access is possible
+- They are associated with one or more VPCs. VPCs in other accounts can be associated too, but only via CLI/API/SDK (not console): `CreateVPCAssociationAuthorization` in the zone owner account, then `AssociateVPCWithHostedZone` in the VPC owner account
+- At scale (many accounts/VPCs) use **Route 53 Profiles** instead (see below)
+- VPC must have `enableDnsHostnames` and `enableDnsSupport` set to true
+- PHZ cannot be queried from on-premises directly => use Resolver inbound endpoints
 - Split-view (Split Horizon) DNS: it is possible to create split-view (split-horizon) DNS for public and internal use with the same zone name. Useful for accessing systems from the private network without accessing the public internet.
 - Since only from within VPC => resolved by AmazonProvidedDNS
 
@@ -88,6 +93,8 @@
 - Can be used for both apex and normal records
 - There is no additional charge for alias requests pointing at AWS resources
 - An alias is a subtype, we can have an A record alias and a CNAME record alias
+- Alias targets: ELB, CloudFront, API Gateway, S3 static website, Elastic Beanstalk, VPC interface endpoints, Global Accelerator, another record in the same hosted zone. **NOT** an EC2 DNS name or an RDS endpoint (use CNAME for those)
+- Alias records have no configurable TTL (inherits the target's) and can use `EvaluateTargetHealth` instead of a separate health check
 
 ## Route 53 Routing Policies
 
@@ -114,16 +121,19 @@ Available routing policies:
 - Health checks are separate from, but used by records in Route53
 - They are created separately and they can be used by records in Route53
 - Health checks are performed by a fleet of health checkers distributed globally
-- Health checks are not just limited to AWS targets, can be any service with an IP address
+- Health checks are not just limited to AWS targets, can be any service with a public IP address or domain name
+- Health checkers are on the internet => they **cannot reach private endpoints** directly. For private resources: CloudWatch metric => CloudWatch alarm => Route 53 CloudWatch alarm health check
 - Health checkers check every 30s (or 10s at extra cost)
 - Health checks can be TCP, HTTP, HTTPS, HTTP(S) with String Matching. A TCP connections should be completed in 4s and endpoint should respond with a 2xx or 3xx status code within 2s after connections. After the status code is received, the response body should also be received within 2 seconds
-- In case of string matching the text should be present entirely in the first 5120 characters of the request body or the endpoint fails the health check
+- In case of string matching the text should be present entirely in the first 5120 bytes of the response body or the endpoint fails the health check
 - Based on the health checks the service can be categorized as `Healthy` or `Unhealthy`
 - Health checks can be of 3 types:
   - Endpoint: assess the health of an endpoint we specify
   - CloudWatch Alarm Checks: they react to CloudWatch alarms
   - Calculated Checks: checks of other checks
 - If 18%+ of the health checkers report the target as healthy, the target is considered healthy
+- Failure threshold configurable (default 3 consecutive checks); we can select health checker Regions; latency graphs; SNS notifications via CloudWatch alarms on the `HealthCheckStatus` metric
+- Calculated health checks: up to 256 child checks, healthy if at least N children are healthy
 
 ## Failover Routing
 
@@ -188,12 +198,15 @@ Available routing policies:
   - Lat/lon coordinates. Distance is computed with that coordinate
   - Local zone: AWS local zone location.
 - A Geoproximity record allows defining a bias (between -99 <=> +99), increasing or decreasing the region size. We can influence the routing distance based on this bias
+- Geoproximity used to require Route 53 Traffic Flow; since 2024 it is available directly as a record routing policy
 
 ## IP-based Routing
 
 - Chooses the DNS response based on the source IP of the client mapped to a CIDR block
 - If client has IP in CIDR A => return record A
 - If client has IP in CIDR B => return record B
+- CIDR blocks are grouped in **CIDR collections** / locations
+- Use case: route users from a known ISP/corporate range to a specific endpoint, cost-optimize by network
 
 ## Route53 Interoperability
 
@@ -216,7 +229,7 @@ Available routing policies:
 - DNSSEC can be enabled form the console and from the CLI
 - Once initiated, the process starts with KMS, an asymmetric key pair is required/created within KMS
 - The key-signing keys (KSK) is created from this KMS key, both the public and private ones which will be used by R53
-- These keys need to be in us-east-1
+- These keys need to be in us-east-1 (KMS customer managed key, asymmetric `ECC_NIST_P256`, sign/verify)
 - Next, R53 creates the zone-signing keys (ZSK) internally
 - Next, R53 adds the KSK and zone-signing key public parts into a DNS key record within the hosted zone, this tells every DNSSEC resolver which public keys to use to verify signatures on any other records
 - The private key signing key used to sign those DNS key records and create new records:
@@ -245,8 +258,10 @@ Useful commands:
 
 ## VPC DNS and DNS Endpoints
 
-- In every VPC the VPC.2 IP address is reserved for the DNS
-- In every subnet the .2 is reserved for Route53 resolver
+- In every VPC the VPC CIDR base + 2 address (e.g. `10.0.0.2`) is reserved for the DNS (Route 53 VPC Resolver, a.k.a. `AmazonProvidedDNS`); also reachable at `169.254.169.253` (and `fd00:ec2::253` on Nitro)
+- In every subnet the .2 is reserved as well (AWS reserves 5 IPs per subnet)
+- **Naming (2025)**: Route 53 Resolver was renamed **Route 53 VPC Resolver** when Route 53 Global Resolver launched; API names did not change
+- Limit: **1024 packets per second per ENI** to the Resolver (not adjustable) - high-volume DNS clients need caching
 - Via this address VPC resources can access R53 Public and associated private hosted zones
 - Route53 resolver is only accessible from within the VPC (non site-to-site VPN or DX), hybrid network integration is problematic both inbound and outbound
   ![Isolated DNS Environments](images/Route53Endpoints1.png)
@@ -265,4 +280,71 @@ Useful commands:
   ![Route53 Endpoints Architecture](images/Route53Endpoints3.png)
 - Route53 endpoints are delivered as a service
 - They are HA and they scale automatically based on load
-- They can handle around 10k queries per second per endpoint
+- They can handle up to ~10k queries per second **per IP address (ENI)** in an endpoint => scale by adding IPs
+- Inbound and outbound endpoints need at least 2 IPs, ideally in 2 AZs
+- Support Do53 and **DNS over HTTPS (DoH)** (inbound and outbound)
+- Cost: per ENI-hour + per million queries
+
+## Resolver Rules
+
+- **Forward** rules: queries for a domain (e.g. `corp.example.com`) are forwarded through an outbound endpoint to target IPs (on-premises DNS)
+- **System** rules: override a forward rule for a subdomain and resolve it with the VPC Resolver (e.g. `aws.corp.example.com` stays in AWS)
+- **Delegate** rules (Jun 2025): delegate authority of a subdomain between PHZs and on-premises DNS using NS records instead of conditional forwarding
+- Most specific rule wins
+- Rules are associated with VPCs. **Share rules across accounts with AWS RAM** => central networking account owns the outbound endpoint + rules; spoke accounts associate the shared rules with their VPCs (spoke VPCs do not need their own endpoints, queries flow through the central endpoint)
+- Common hybrid DNS architecture:
+    - Hub "DNS VPC" in the network account with inbound + outbound endpoints, connected over DX/VPN
+    - On-premises DNS conditional forwards AWS domains (PHZs, `amazonaws.com` for interface endpoints) to the **inbound** endpoint IPs
+    - Forward rules for on-premises domains shared with RAM to all spoke VPCs
+    - PHZs associated with all spoke VPCs (or via Profiles)
+
+## Route 53 Profiles (Apr 2024)
+
+- Bundle DNS config in one object: PHZ associations, Resolver rules, DNS Firewall rule groups, interface endpoint private DNS, and some VPC DNS settings (DNSSEC validation, reverse DNS)
+- Share the Profile with **RAM** to accounts/OUs; associate it with VPCs (1 Profile per VPC) => consistent DNS across hundreds of VPCs without per-VPC association scripts
+- Exam trigger: "standardize DNS settings (PHZs, forwarding rules, DNS Firewall) across many accounts/VPCs with minimal operational overhead" => Route 53 Profiles
+
+## Route 53 Resolver DNS Firewall
+
+- Filter outbound DNS queries from VPCs: domain lists (custom or AWS managed, e.g. malware, botnet C2), actions `ALLOW` / `BLOCK` (NODATA, NXDOMAIN, custom override) / `ALERT`
+- **DNS Firewall Advanced** (2024): detects DNS tunneling and DGA domains
+- Fail-open vs fail-closed config; centrally managed with **Firewall Manager**; shareable via RAM / Profiles
+- Mitigates DNS exfiltration that Network Firewall can't see when traffic goes to the VPC Resolver
+- See `14-security-and-config/network-and-dns-firewall.md`
+
+## Resolver Query Logging
+
+- Logs DNS queries from VPCs (and inbound endpoints) to CloudWatch Logs, S3 or Firehose; shareable via RAM
+
+## Route 53 Global Resolver (GA Mar 2026)
+
+- Anycast, internet-reachable DNS resolver for clients **outside** VPCs (offices, remote users, devices) without deploying inbound endpoints
+- Resolves public domains and Route 53 private hosted zones; Do53, DoH, DoT; DNS filtering + query logging
+- We choose 2+ Regions; queries go to the closest Region with automatic failover
+
+## Route 53 Application Recovery Controller (ARC)
+
+- **Routing controls**: simple on/off switches (data plane, highly available cluster of 5 Regional endpoints) tied to Route 53 health checks => fail over between Regions without depending on the Route 53 control plane. **Safety rules** (assertion/gating) prevent unsafe states (e.g. both cells off)
+- **Zonal shift**: move traffic away from an impaired AZ for ALB/NLB (cross-zone off), EKS, ASG... for a time-boxed period
+- **Zonal autoshift**: AWS shifts traffic automatically when it detects an AZ impairment (with practice runs)
+- **Region switch** (2025): orchestrated multi-Region failover/switchover plans (Aurora global DB, EC2/ASG, Route 53 records, custom Lambda steps), with plan evaluation
+- **Readiness checks**: audit resource capacity/config across replicas
+
+> **Status (2026):** ARC readiness checks are closed to new customers (since Apr 30, 2026); existing customers can keep using them. AWS recommends ARC Region switch plan evaluation instead.
+
+## Route 53 Limits and Misc
+
+- 500 hosted zones per account (adjustable), 10,000 records per hosted zone (adjustable), 300 VPCs per PHZ association by default
+- Multivalue answer returns up to 8 healthy records
+- Route 53 **Traffic Flow**: visual editor for complex routing trees (policy records, extra cost)
+- Route 53 query logging for **public** hosted zones goes to CloudWatch Logs in `us-east-1`
+- DNSSEC **validation** for VPC Resolver can be enabled per VPC (separate from DNSSEC signing of our zones)
+
+## Exam Tips
+
+- "On-premises must resolve PHZ records" => inbound endpoint; "EC2 must resolve on-premises names" => outbound endpoint + forward rule
+- "Many accounts must use the same forwarding rules" => share Resolver rules via RAM (or Profiles)
+- "Active-passive DR" => failover routing + health checks; "Region evacuation without relying on control plane" => ARC routing controls
+- "Health check for private resource" => CloudWatch alarm-based health check
+- "Route users by country for compliance" => geolocation (not latency); "shift traffic gradually between Regions" => geoproximity bias or weighted
+- "Zone apex to ALB/CloudFront" => alias record

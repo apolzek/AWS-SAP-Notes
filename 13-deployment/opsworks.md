@@ -1,5 +1,9 @@
 # AWS OpsWorks
 
+> **Status (2026):** AWS OpsWorks is **end of life** in all modes: OpsWorks for Puppet Enterprise ended March 31, 2024, OpsWorks for Chef Automate ended May 5, 2024 and OpsWorks Stacks ended May 26, 2024. Consoles and APIs are no longer available. Kept here because older exam questions/scenarios may still mention it.
+> - Migration paths: Chef/Puppet workloads -> self-managed Chef/Puppet on EC2 or AWS Marketplace; OpsWorks Stacks -> AWS Systems Manager (State Manager, Automation, Run Command, Application Manager) or the AWS-provided *Stacks to Systems Manager* migration script; app deployments -> CodeDeploy / Elastic Beanstalk
+> - On a current exam: "keep using existing Chef cookbooks/Puppet manifests" -> run Chef/Puppet yourself (or SSM State Manager can run Chef recipes/Ansible playbooks via `AWS-ApplyChefRecipes`, `AWS-ApplyAnsiblePlaybooks`)
+
 - OpsWorks is configuration managed service which provides AWS managed implementation of Chef a Puppet
 - OpsWorks functions in one of 3 modes:
     - Puppet Enterprise: we can create an AWS Managed Puppet Master Server (desired state architecture)

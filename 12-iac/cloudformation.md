@@ -8,6 +8,16 @@
 - The initial job of a stack is to create physical resources based on the logical resources defined in the template
 - If a stack's template are changed, physical resources are changed as well
 - If a stack is deleted, normally the physical resources are deleted
+- Template sections: `AWSTemplateFormatVersion`, `Description`, `Metadata`, `Parameters`, `Rules`, `Mappings`, `Conditions`, `Transform`, `Resources` (only mandatory section), `Outputs`
+
+## Key Quotas
+
+- Resources per stack: 500
+- Parameters, outputs, mappings per template: 200 each
+- Template body: 51,200 bytes inline (API/CLI), 1 MB when uploaded via S3
+- Stacks per account per region: 2,000 (adjustable)
+- Exports must be unique per account per region
+- Exceeding limits => split into nested stacks / multiple stacks, or use stack refactoring
 
 ![CFN Resources](images/CFNResources.png)
 
@@ -27,11 +37,15 @@
   - Notification options: we can specify an SNS topic where notifications should go
   - Stack creation options: following options are included for stack creation, but aren't available as part of stack updates:
     - Timeout: Specifies the amount of time, in minutes, that CloudFormation should allot before timing out stack creation operations
+    - Termination protection: prevents the stack from being deleted accidentally
+- Stack policy: JSON document with `Allow`/`Deny` on `Update:Modify`, `Update:Replace`, `Update:Delete` per resource. Once set, all resources are protected by default unless explicitly allowed. Can be overridden temporarily during an update
+- Rollback triggers: up to 5 CloudWatch alarms monitored during create/update + monitoring period (0-180 min) after the operation
+- `--disable-rollback` / "preserve successfully provisioned resources" + `ContinueUpdateRollback` for stacks stuck in `UPDATE_ROLLBACK_FAILED`
 
 ## Template Parameters and Pseudo Parameters
 
 - Template parameters allow input via the console, CLI or API when the stack is created or updated
-- Parameters are defined within the resources and they can be referenced from within the logical resources
+- Parameters are defined in the `Parameters` section of the template and they can be referenced from within the logical resources (`Ref`)
 - Parameters can have default values, allowed values, min/max length, allowed patterns, no echo (useful for passwords, the value is not displayed when typed) and types
 
   ![Parameters](images/Parameters.png)
@@ -48,6 +62,10 @@
 
   ![PseudoParameters](images/PseudoParameters.png)
 
+- Other pseudo parameters: `AWS::Partition`, `AWS::URLSuffix`, `AWS::NotificationARNs`, `AWS::NoValue` (removes a property when used with `Fn::If`)
+- AWS-specific parameter types: `AWS::EC2::KeyPair::KeyName`, `AWS::EC2::VPC::Id`, `List<AWS::EC2::Subnet::Id>`, and SSM parameter types `AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>` (e.g. latest AMI from public SSM parameters)
+- **Dynamic references**: `{{resolve:ssm:name}}`, `{{resolve:ssm-secure:name}}`, `{{resolve:secretsmanager:secret-id:SecretString:json-key}}` => retrieve values/secrets at deploy time without putting them in the template
+- `ManageMasterUserPassword` (RDS) or `AWS::SecretsManager::Secret` with `GenerateSecretString` => avoid passwords as parameters
 - Best practice:
   - Minimize number of parameters and provide defaults where applicable
   - Use pseudo parameters where possible
@@ -61,7 +79,10 @@
   - `Fn::GetAZs` and `Fn::Select`: get availability zones in a regions and select one
   - Conditions: `Fn::IF`, `And`, `Equals`, `Not`, `Or`
   - `Fn::Base64` and `Fn::Sub`: encode strings to base64, substitute replacement on variables in the text
-  - `Fn:Cidr`: build CIDR blocks
+  - `Fn::Cidr`: build CIDR blocks
+  - `Fn::ImportValue`: import an exported output of another stack
+  - `Fn::FindInMap`: lookup in Mappings
+  - `Fn::ToJsonString`, `Fn::Length`, `Fn::ForEach` (loops): available with the `AWS::LanguageExtensions` transform
 - `Fn::GetAZs` - returns the available AZs in region. If the region has a default VPC configured, it return the AZs which are available in the default VPC
   ![FnGetAtt](images/FnGetAtt.png)
   ![FnSelect](images/FnSelect.png)
@@ -103,7 +124,9 @@
   Outputs:
       WordPressUrl:
           Description: 'description text'
-          Value: !Join['', 'https://', !GetAtt Instance.DNSName]
+          Value: !Join ['', ['https://', !GetAtt Instance.PublicDnsName]]
+          Export:
+              Name: !Sub '${AWS::StackName}-WordPressUrl'
       ...
   ```
 
@@ -121,7 +144,7 @@
   Conditions:
       IsProd: !Equals
           - !Ref EnvType
-          - `prod`
+          - 'prod'
   ```
 - Conditions can be nested
 
@@ -134,6 +157,7 @@
 - Also, it tries to determine a dependency order (example: VPC => SUBNET => EC2) by using references or functions
 - Dependency can be defined using the `DependsOn` property to specify which other resources a resource depends on
 - `DependsOn` can accept a single resource or a list of resources
+- Classic use case: EC2 instance with public IP / EIP must depend on the `AWS::EC2::VPCGatewayAttachment` (no implicit reference exists)
 
 ![CFNDependsOn](images/CFNDependsOn.png)
 
@@ -146,6 +170,10 @@
 - `cfn-signal` is an utility running on the EC2 instances sending success/failure signals to CFN
 - If the timeout is reached and the number of success signals are not met, the stack will fail creation
 - For provisioning EC2 and ASG, we should us a `CreationPolicy`
+  - `ResourceSignal`: `Count` + `Timeout` (ISO 8601, e.g. `PT15M`)
+  - ASG: `AutoScalingCreationPolicy.MinSuccessfulInstancesPercent`
+  - Typical user data: `cfn-init ... && cfn-signal -e $? --stack ${AWS::StackName} --resource MyASG --region ${AWS::Region}`
+- `CreationPolicy` is supported on `AWS::EC2::Instance`, `AWS::AutoScaling::AutoScalingGroup`, `AWS::CloudFormation::WaitCondition` and `AWS::AppStream::Fleet` (`StartFleet`)
 
   ![CreationPolicy](images/CreationPolicy.png)
 
@@ -175,6 +203,8 @@
 - Any outputs of a nested stack are returned to the root stack which can be referenced as `NESTEDStack.Outputs.XXX`
 - Benefits of a nested stack is to reuse the same template, not the actual stack created
 - We should use nested stacks when we want to link the life cycles of different stacks
+- Updates are always initiated from the root stack; nested stacks count as resources (each nested stack has its own 500 resource limit)
+- Change sets on the root stack can include nested stacks
 
   ![Nested Stacks](images/NestedStacks.png)
 
@@ -187,17 +217,29 @@
 - Exports must have unique names in the region
 - To use the exported resources we can use `Fn::ImportValue` intrinsic function
 - Cross-region or cross-account is not supported for cross-stack references
+- An export can't be deleted or modified while another stack imports it => the importing stacks must be updated first (tight coupling)
+- For cross-account/cross-region sharing use SSM Parameter Store (with dynamic references, RAM sharing for advanced parameters), custom resources, or CDK `crossRegionReferences`
+- Nested vs cross-stack (exam):
+  - Nested: reuse templates/components, single lifecycle, deployed together (e.g. same ALB module in many apps)
+  - Cross-stack: share long-lived resources owned by another team/stack with independent lifecycles (e.g. network stack exporting VPC/subnet IDs for app stacks)
 
   ![CrossStackRef](images/CrossStackRef.png)
 
 ## StackSets
 
 - Allows to create/update/delete stacks across many regions or many accounts
-- StackSets are containers in an admin account (account where the StackSet is applied, it does not have to be any special account)
+- StackSets are containers in an admin account (account where the StackSet is applied: any account for self-managed permissions; the Organizations management account or a **delegated administrator** account for service-managed permissions)
 - StackSets contain stack instances (= container for an individual stack) which reference stacks
 - Stack instances and stacks are created in target accounts
 - Each stack created by a StackSet is a stack created in one region in one account
 - Security: we can use self-managed roles or service-managed roles within an Org (everything handled by the product). CFN will assume a role to interact with the target accounts
+  - Self-managed: create `AWSCloudFormationStackSetAdministrationRole` in admin account and `AWSCloudFormationStackSetExecutionRole` in each target account
+  - Service-managed: requires trusted access with AWS Organizations; target **OUs**; roles are created automatically
+- **Automatic deployment** (service-managed only): new accounts added to a target OU automatically get the stack instances; removed accounts can have their stacks deleted or retained
+- **Deployment ordering** (Nov 2025): dependencies between stack instances (up to 10 per instance) in auto-deployment so foundational stacks (network/security) deploy first
+- Deployment options: region order, maximum concurrent accounts (number or %), failure tolerance, region concurrency (sequential/parallel), concurrency mode (strict vs soft failure tolerance)
+- Parameter overrides per account/region
+- Drift detection supported on StackSets
 - A template for a StackSet is a normal CloudFormation template
 - Terminology:
   - **Concurrent Accounts**: a value that you can set that specifies in how many accounts it can be deployed at the same time
@@ -206,6 +248,8 @@
 - StackSet use cases:
   - Crate AWS Config Rules (MFA, Elastic IPs, EBS Encryption)
   - Create IAM Roles for cross-account access at scale
+  - Baseline guardrails/logging (CloudTrail, GuardDuty, Config recorders) in every new account
+  - Control Tower uses StackSets under the hood for account customizations (CfCT)
 
   ![StackSets](images/StackSets.png)
 
@@ -216,8 +260,11 @@
 - With deletion policy, we can define on each resource:
   - **Delete**: default
   - **Retain**: physical resources remain untouched
-  - **Snapshot**: only supported on EBS volumes, ElastiCache, Neptune, RDS, Redshift. A snapshot is taken before the physical resource is deleted. Snapshots then persist past the Stack lifetime => you have to clean up ($)
+  - **RetainExceptOnCreate** (2023): retain on stack delete, but delete if the resource was created during a create operation that rolled back (avoids orphaned resources after failed creates)
+  - **Snapshot**: only supported on EBS volumes (`AWS::EC2::Volume`), ElastiCache (CacheCluster, ReplicationGroup), Neptune, RDS (DBInstance, DBCluster), Redshift, DocumentDB. A snapshot is taken before the physical resource is deleted. Snapshots then persist past the Stack lifetime => you have to clean up ($)
 - Deletion policies only apply to delete operation, NOT replace operation!
+- **UpdateReplacePolicy**: same options (`Delete`, `Retain`, `Snapshot`) but applies when an update causes **replacement** of the resource
+- Exam trap: S3 bucket deletion fails if the bucket is not empty (use a custom resource to empty it or `Retain`)
 
   ![DeletionPolicy](images/DeletionPolicy.png)
 
@@ -227,6 +274,8 @@
 - CFN stack roles is a feature where CFN can assume a role to gain permissions to create resources from a stack without the need for the initiator to have the necessary permissions
 - Allows role separation
 - The identity creating the stack does not need resource permissions, only `iam:PassRole` (to pass the role to CloudFormation)
+- Combine with Service Catalog: end users launch approved products (CFN templates) using a launch constraint role, without direct permissions
+- Condition key `cloudformation:RoleArn` can force users to always use a specific service role
 
   ![Stack Roles](images/StackRoles.png)
 
@@ -242,6 +291,9 @@ VS
 - `cfn-init` is a desired state (WHAT we want to occur)
 - `cfn-init` is idempotent and can be cross-platform
 - `cfn-init` is a helper script which is installed on the EC2 OS (`/opt/aws/bin/cfn-init`)
+- Config keys (executed in this order): `packages`, `groups`, `users`, `sources`, `files`, `commands`, `services`; `configSets` group configs and define order
+- Logs: `/var/log/cfn-init.log` and `/var/log/cfn-init-cmd.log` (troubleshooting: disable rollback to inspect the instance)
+- Helper scripts: `cfn-init`, `cfn-signal`, `cfn-hup`, `cfn-get-metadata`
 
   ![cfn-init](images/cfn-init.png)
 
@@ -264,6 +316,30 @@ VS
 
 - We can have multiple change sets and preview each of them separately to decide which one is the right one
 - We can chose which change set we want to apply by executing it
+- Change set shows: action (Add/Modify/Remove/Import), logical/physical ID, **Replacement** (True/False/Conditional) - key for avoiding data loss
+- Change sets don't tell if the update will succeed (validation errors can still happen)
+- **Drift-aware change sets** (2025): compare new template vs last deployed template vs actual live configuration => see and avoid overwriting manual changes (drift)
+- **Early validation** (2025): during change set creation, checks invalid properties, resource name conflicts, non-empty S3 bucket deletes
+- Change set types: `UPDATE`, `CREATE`, `IMPORT` (import existing resources into a stack)
+
+## Update Behaviors
+
+- **No interruption**: update in place, no downtime (e.g. changing tags)
+- **Some interruption**: update in place with brief interruption (e.g. EC2 instance type on EBS-backed instance => reboot)
+- **Replacement**: new physical resource created, references updated, old one deleted (e.g. RDS `DBInstanceIdentifier`, EC2 AMI change) => new physical ID, potential data loss
+- `UpdatePolicy` attribute:
+  - ASG: `AutoScalingRollingUpdate` (batches, `MinInstancesInService`, `MaxBatchSize`, `PauseTime`, `WaitOnResourceSignals`), `AutoScalingReplacingUpdate` (new ASG, `WillReplace`), `AutoScalingScheduledAction`
+  - `AWS::Lambda::Alias`: `CodeDeployLambdaAliasUpdate` (traffic shifting)
+  - `AWS::ElastiCache::ReplicationGroup`: `UseOnlineResharding`; `AWS::OpenSearchService::Domain`: `EnableVersionUpgrade`
+- Blue/green ECS deployments through `AWS::CodeDeployBlueGreen` transform/hook
+
+## Drift Detection
+
+- Detects differences between the expected configuration (template + parameters) and the actual configuration of resources changed outside CloudFormation
+- Statuses: `IN_SYNC`, `MODIFIED`, `DELETED`, `NOT_CHECKED`
+- Works at stack, resource and StackSet level; not all resource types support it
+- Can be automated with AWS Config rule `cloudformation-stack-drift-detection-check` + EventBridge/SNS
+- Resolve: revert manually, update the template to match, or use drift-aware change sets / resource import
 
   ![ChangeSets](images/ChangeSets.png)
 
@@ -282,3 +358,69 @@ VS
   - The compute (Lambda function or SNS topic) can respond to this custom data, letting CloudFormation know about the success/failure of the execution (so it can move into CREATE_COMPLETE or not)
 
   ![CustomResource](images/CustomResource.png)
+
+- Custom resource details:
+  - Type `Custom::MyName` or `AWS::CloudFormation::CustomResource` with property `ServiceToken` (Lambda ARN or SNS topic ARN)
+  - Request types: `Create`, `Update`, `Delete`; the function must send the response (SUCCESS/FAILED + `PhysicalResourceId` + `Data`) to the **pre-signed S3 URL** (`ResponseURL`)
+  - If no response is sent, the stack waits until timeout (configurable with `ServiceTimeout`, default/max 1 hour) => always handle errors and `Delete` events
+  - Returned `Data` can be read with `!GetAtt MyCustom.Attribute`
+  - Typical exam use: empty an S3 bucket before deletion, look up AMI IDs, call 3rd party APIs, cross-account/cross-region lookups
+- `cfn-response` module helps for inline Lambda (ZipFile) code
+
+## Resource Import and Stack Refactoring
+
+- **Resource import**: bring existing resources into a stack (IMPORT change set); resources need `DeletionPolicy` in the template; useful to adopt manually created resources or move resources between stacks (retain + import)
+- **Stack refactoring** (2025): move resources between stacks, split monolithic stacks and rename logical IDs without re-creating resources (CLI/SDK, console and `cdk refactor`)
+- **IaC generator** (2024): scan existing resources in the account and generate a CloudFormation template (and CDK app) to manage them; partial scans by resource type (2025)
+
+## Extensions: Registry, Modules, Macros, Hooks
+
+- **CloudFormation Registry**: public (AWS and third-party, e.g. Datadog, MongoDB Atlas) and private extensions; resource types written with the CFN CLI (replace custom resources for reusable cases)
+- **Modules**: reusable template fragments registered as `MyOrg::Service::Thing::MODULE`, versioned, used like a resource
+- **Macros / Transforms**: Lambda-backed template processing before deployment
+  - `AWS::Serverless-2016-10-31` (SAM): `AWS::Serverless::Function`, `Api`, `SimpleTable`
+  - `AWS::Include`: include template snippets from S3
+  - `AWS::LanguageExtensions`: `Fn::ForEach`, `Fn::Length`, `Fn::ToJsonString`, intrinsic functions in `DeletionPolicy`
+  - Templates with transforms must be deployed via change sets (`CAPABILITY_AUTO_EXPAND`)
+- **Hooks**: proactive controls invoked before create/update/delete of resources, stacks or change sets => fail or warn on non-compliant resources (e.g. unencrypted S3 bucket)
+  - Lambda hooks, **Guard hooks** (CloudFormation Guard rules from S3) (2024)
+  - **Managed proactive controls** (2025): use Control Tower control catalog in hooks without code, with warn mode
+  - Proactive vs detective: Hooks/Guard block before deployment; AWS Config detects after deployment
+- **cfn-lint** (syntax/best practices) and **cfn-guard** (policy as code) in CI/CD pipelines
+- Capabilities acknowledgements: `CAPABILITY_IAM`, `CAPABILITY_NAMED_IAM` (custom IAM names), `CAPABILITY_AUTO_EXPAND` (macros/nested with transforms)
+
+## Deployment Options and CI/CD
+
+- **Git sync** (2023): stack automatically updated from a template + deployment file in a Git repository (GitHub, GitLab, Bitbucket) via CodeConnections
+- CodePipeline CloudFormation actions: create/update stack, create/execute change set (manual approval between them), StackSets deploy
+- `aws cloudformation deploy` (creates and executes a change set), `package` (uploads local artifacts to S3)
+- Service Catalog products (governed self-service); Infrastructure Composer (formerly Application Composer) for visual authoring
+- AWS IaC MCP server and CloudFormation Language Server (2025) for IDE/AI-assisted authoring
+
+## AWS CDK (Cloud Development Kit)
+
+- Define infrastructure in TypeScript, Python, Java, C#/.NET, Go => `cdk synth` produces CloudFormation templates => deployed as CFN stacks
+- Constructs:
+  - L1 (`Cfn*`): 1:1 with CloudFormation resources
+  - L2: higher-level with sensible defaults and helper methods (`bucket.grantRead(role)`)
+  - L3 (patterns): multi-resource architectures (e.g. `ApplicationLoadBalancedFargateService`)
+- `cdk bootstrap`: creates the CDKToolkit stack (S3 bucket, ECR repo, IAM roles) per account/region - required before deploying (incl. cross-account trust for pipelines)
+- `cdk diff` (like change sets), `cdk deploy`, `cdk destroy`, `cdk watch`/hotswap for dev, `cdk refactor` (2025, preview)
+- CDK Pipelines: self-mutating CodePipeline for multi-account/multi-region deployments
+- CDK Nag / Aspects for compliance checks
+- Exam: CDK vs CFN - CDK when developers prefer programming languages, loops/abstractions, reusable constructs; result is still CloudFormation (same limits, same drift/rollback behavior)
+- SAM: CFN transform + CLI focused on serverless (local testing `sam local`, `sam deploy`, gradual Lambda deployments)
+
+## Exam Tips
+
+- Deploy the same baseline to all accounts in an Org including future accounts => StackSets with service-managed permissions + automatic deployment targeting OUs
+- Prevent accidental replacement/deletion of a production DB => stack policy + `DeletionPolicy: Snapshot/Retain` + `UpdateReplacePolicy` + termination protection
+- Wait for app bootstrap before marking complete => `CreationPolicy` + `cfn-signal`; external process => `WaitCondition`
+- Apply config changes to running instances without replacement => `cfn-hup` + `cfn-init`
+- Preview impact before update => change sets (look at Replacement column)
+- Resources changed manually => drift detection / drift-aware change sets
+- Unsupported resource or custom logic => custom resource (Lambda) or registry resource type
+- Enforce compliance before deployment => CloudFormation Hooks / Guard; after deployment => AWS Config
+- Share VPC IDs across stacks in same region => exports + `Fn::ImportValue`; across accounts/regions => SSM parameters / StackSets
+- Secrets in templates => dynamic references to Secrets Manager / SSM SecureString, never plaintext parameters (`NoEcho` only hides the value in console/API output)
+- Legacy manually-created infra to IaC => IaC generator + resource import

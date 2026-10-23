@@ -2,8 +2,8 @@
 
 - Is a ML product used to detect and analyse text contained in input documents such as JPEG, PNG, PDF or TIFF
 - The output is extracted text, structure of that text and any analysis that can be performed on that text
-- For most documents the Textract is capable to operate in a synchronous way (real time)
-- For large documents it will operate in asynchronous way
+- For most documents the Textract is capable to operate in a synchronous way (real time) - single-page documents (JPEG, PNG, single-page PDF/TIFF)
+- For large documents it will operate in asynchronous way - multi-page PDF/TIFF stored in S3 (up to 3,000 pages), `Start*` APIs with SNS completion notification and `Get*` to fetch results
 - It is pay per usage, custom pricing being available for large volume of documents
 - Use cases of Textract:
     - Detection of text and the relationship between the text, example receipt - dates, items, prices. It also offers metadata about the text: where the ext occurs
@@ -12,3 +12,15 @@
         - For receipts: prices, vendors, line items, dates, etc.
         - Identity documents: abstraction of certain fields to being able to store them in a table of a database
 - It can be integrated with other AWS services
+- APIs:
+    - `DetectDocumentText`: OCR - lines and words (printed and handwritten)
+    - `AnalyzeDocument` with feature types: `FORMS` (key-value pairs), `TABLES`, `QUERIES` (ask natural language questions e.g. "What is the policy number?"), `SIGNATURES`, `LAYOUT` (titles, headers, paragraphs - useful for RAG chunking)
+    - `AnalyzeExpense`: invoices and receipts (vendor, totals, line items)
+    - `AnalyzeID`: identity documents (US passports, driver's licenses)
+    - `AnalyzeLending`: mortgage/loan document packages (classifies and extracts pages)
+- **Custom Queries** (adapters): fine-tune Queries for our own document types with a few samples
+- Confidence scores for each element - combine with **Amazon Augmented AI (A2I)** for human review below a threshold <span style="color: red;">EXAM</span>
+- Textract vs Rekognition `DetectText`: Textract for documents (forms, tables, dense text); Rekognition for text in natural scenes/video (signs, license plates)
+- Textract vs Comprehend: Textract extracts text/structure from images/PDFs, Comprehend derives meaning (entities, sentiment, PII) from text - often chained
+- Alternative (2025+): **Amazon Bedrock Data Automation** for generative multimodal extraction (documents, images, audio, video) into custom schemas - consider for complex/variable documents
+- Typical pipeline: S3 upload -> Lambda/Step Functions -> Textract async job -> SNS -> Lambda -> Comprehend/DynamoDB/OpenSearch (Intelligent Document Processing - IDP)

@@ -2,12 +2,23 @@
 
 - Converts text in "life-like" speech
 - The products takes text in specific languages and outputs speech in that specific language. Polly does not do translation!
-- There 2 modes that Polly operates in:
+- Polly offers several voice engines (originally 2 modes):
     - Standard TTS:
         - Uses a concatenative architecture
         - Takes phonemes (smallest units of sound) to build patterns of speech
     - Neural TTS:
         - Takes phonemes, generate spectograms, it puts those spectograms through a vocoder form which gets the output audio
         - Much advanced way of generating human-like speech
+    - Long-form TTS: voices optimized for long content (news articles, training material) with natural pacing
+    - Generative TTS: largest/most expressive engine (LLM-based), most human-like and emotionally engaged voices
+    - Not every voice/language is available in every engine and region - engine is chosen per request (`Engine` parameter)
 - Output formats: MP3, Ogg Vorbis, PCM
 - Polly is capable of using the Speech Synthesis Markup Language (SSML). This is a way we can provide additional control over how Polly generates speech. We can get Polly to emphasis certain part of the text or do certain pronunciation (whispering, Newscaster speaking style)
+- APIs: `SynthesizeSpeech` (synchronous, real-time, up to 3,000 billed characters per request) and `StartSpeechSynthesisTask` (asynchronous, large text up to 100,000 characters, output written to S3, SNS notification)
+- **Lexicons** (PLS - pronunciation lexicons): customize pronunciation of specific words/acronyms (e.g. "AWS" -> "Amazon Web Services"), up to 5 per request
+- **Speech marks**: metadata (word/sentence/viseme/SSML timing) to sync lip movement or highlight text
+- SSML tags: `<break>`, `<prosody>` (rate/pitch/volume), `<emphasis>`, `<say-as>`, `<amazon:effect name="whispered">`, `<amazon:domain name="news">` (newscaster style for some neural voices)
+- **Brand Voice**: custom neural voice built with AWS for a company
+- Output can be cached in S3/CloudFront to avoid paying for re-synthesis of the same text
+- Pricing per character synthesized (higher for neural/long-form/generative)
+- Use cases: accessibility, e-learning, IVR prompts (Amazon Connect uses Polly voices), news readers, voice for chatbots (Lex)

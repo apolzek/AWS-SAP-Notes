@@ -16,11 +16,14 @@
 
 ## WAF - Web Application Firewall
 
+> **Status (2026):** AWS WAF Classic reached end of support on Sept 30, 2025 - only AWS WAF (v2, API `wafv2`) is current. The new WAF console (2025) calls web ACLs **protection packs**; concepts and APIs are unchanged.
+
 - It is Layer 7 Firewall (understands HTTP/S)
 - Normally firewall operate at Layer 3, 4, 5
 - WAF protects against complex Layer 7 attacks/exploits such as SQL Injection, Cross-Site Scripting
 - It can filter based on location (Geo Blocks), and provides rate awareness
-- Web Access Control List (WEBACL) are used by WAF to protect services and we associate them with ALB, API Gateway, CloudFront or with AppSync
+- Web Access Control List (WEBACL) are used by WAF to protect services and we associate them with ALB, API Gateway (REST APIs, not HTTP APIs), CloudFront or with AppSync. Also: Cognito user pools, App Runner, AWS Verified Access, Amplify Hosting, Bedrock AgentCore Gateway
+- NOT supported directly: NLB, HTTP API Gateway, EC2 - put CloudFront or ALB in front <span style="color: red;">EXAM</span>
 - WEBACL has rules and they are evaluated when traffic arrives
 - (WAF) Rules:
     - We have rules within Rule Groups in case fo WEBACL. Examples of AWS managed rule groups are:
@@ -36,7 +39,7 @@
     - The WEBACL is created for CloudFront or for a regional service (ALB, API GW, AppSync)
     - We need to add Rule Groups/Rules for a WEBACL in order to accomplish any filtering. Rules/rule groups are processed in order
     - WEBACL have a limit of how much compute requirement can the rules use. AWS has a concept named WEBACL Capacity Units for this
-    - WEBACL Capacity Units (WCU): indication for the complexity of rules, there is a limit of how many WCU can be on a single ACL. The default maximum is 1500 (can be increased with a support ticket)
+    - WEBACL Capacity Units (WCU): indication for the complexity of rules, there is a limit of how many WCU can be on a single ACL. 1,500 WCU are included in the base price; a web ACL can go up to a hard maximum of **5,000 WCU** (usage above 1,500 incurs extra charges)
     - Associating a WEBACL to a resource can take time (depending on the service), adjusting a WEBACL associated takes less time
     - A AWS resource can have 1 ACL, but 1 WEBACL can be associated with many resources. We can't associate a CloudFront ACL with other region services
     - AWS Outposts do not support WEBACLs
@@ -46,7 +49,7 @@
     - Rule groups can be Managed (AWS or Marketplace), Yours, Service Owned (Shield and Firewall Manager)
     - AWS managed rule groups are mostly available for free for AWS customers (AWS WAF bot control/fraud control have addition fees)
     - Rules groups attained by the marketplace has subscriptions attached
-    - When we create a rule group we define upfront the WCU capacity (max 1500)
+    - When we create a rule group we define upfront the WCU capacity (max 5,000) - capacity can't be changed after creation
 - Rules:
     - Structure of a rule: Type, Statement, Action
         - Type: determines at a high level how the rule works
@@ -66,15 +69,27 @@
         - Cookies
         - Query parameters
         - URI path
-        - Query string body (first 8192 bytes only)
+        - Query string
+        - Body: ALB and AppSync inspect the first **8 KB** only; CloudFront, API Gateway, Cognito, App Runner, Verified Access default to **16 KB**, configurable up to **64 KB** (extra cost above 16 KB). Oversize handling: continue/match/no match <span style="color: red;">EXAM</span>
+        - JSON body, JA3/JA4 TLS fingerprint, header order
         - HTTP method
     - We can have different types of matches: exact match, starts with, contains, regular expression, etc.
     - We can also have more than one statement with AND, OR, NOT conditions
     - Action: 
-        - For regular rules we can have allow, block, count, captcha, custom response/custom header(`x-amzn-waf-`), label
-        - For rate based rules allow is not a valid action, we only have block, count and captcha
+        - For regular rules we can have allow, block, count, captcha, challenge (silent browser interrogation), custom response/custom header(`x-amzn-waf-`), label
+        - For rate based rules allow is not a valid action, we only have block, count, captcha and challenge
+        - Rate-based rules: minimum limit 10 requests, evaluation window 1, 2, 5 or 10 minutes (default 5), aggregate by source IP, forwarded IP (`X-Forwarded-For`), or custom keys (header, cookie, query arg, label namespace, HTTP method, JA3/JA4 fingerprint...)
         - Custom response and custom header can be used with block action. For allow we can use a custom header only
         - Label can be added to traffic. Labels are WAF internal concept. They allow multi-stage flows, where first rule adds a label, the rule after that can run wether the label is present or not
+- Logging:
+    - Destinations: CloudWatch Logs, S3, Kinesis Data Firehose - names must start with `aws-waf-logs-` <span style="color: red;">EXAM</span>
+    - One destination per web ACL; redact fields (e.g. `Authorization` header); logging filters to keep only blocked requests
+    - Sampled requests in console (last 3 hours) and CloudWatch metrics per rule
+- IP sets (up to 10,000 CIDRs each) and regex pattern sets are referenced by rules - update them via API/Lambda for automated blocking (e.g. from GuardDuty findings)
+
+- Pricing: per policy per region per month (+ underlying WAF/Config costs)
+- Exam: "ensure every ALB/CloudFront in every account (current and future) has a baseline WAF web ACL" -> Firewall Manager
+
 - Pricing:
     - We are charged for every WEBACL per month (currently $5/month). WEBACL can be reused!
     - Rules on WEBACL are charged monthly (currently 1$/month)
@@ -84,5 +99,27 @@
         - Intelligent Threat Mitigation
         - Bot Control ($10/month) + ($1/1mil requests)
         - Captcha
-        - Fraud Control/Account Takeover
+        - Fraud Control: Account Takeover Prevention (ATP) / Account Creation Fraud Prevention (ACFP) - monthly fee + per 1,000 login/sign-up requests analyzed
+        - Anti-DDoS managed rule group
+        - Body inspection above 16 KB and WCU above 1,500
     - Marketplace Rule groups come with extra charge
+
+## WAF Managed Rule Groups (main ones)
+
+- **Baseline**: Core rule set (CRS - OWASP Top 10), Admin protection, Known bad inputs (Log4j etc.)
+- **Use-case specific**: SQL database, Linux/POSIX/Windows OS, PHP, WordPress
+- **IP reputation**: Amazon IP reputation list, Anonymous IP list (VPNs, Tor, hosting providers)
+- **Bot Control** (paid): *Common* level (self-identifying bots, verified bots like search engines - labels allow/block per category) and *Targeted* level (sophisticated bots via browser interrogation, fingerprinting, behavioural ML, uses challenge/CAPTCHA tokens)
+- **Fraud Control** (paid):
+    - **ATP** - Account Takeover Prevention: inspects login requests, checks credentials against stolen-credential DB, detects credential stuffing/brute force
+    - **ACFP** - Account Creation Fraud Prevention: inspects sign-up page requests to stop fake account creation
+    - AWS recommends WAF Fraud Control as the replacement for Amazon Fraud Detector (closed to new customers Nov 2025) for account sign-up fraud
+- **Anti-DDoS** rule group (`AWSManagedRulesAntiDDoSRuleSet`, June 2025, paid): L7 HTTP flood detection/mitigation in seconds; became the default L7 DDoS protection and replaces Shield Advanced's legacy L7 automatic mitigation (scheduled to be discontinued Jan 1, 2027; Shield Advanced adds this rule group in Count mode to eligible web ACLs since Jul 2026)
+- Client application integration: JavaScript/mobile SDKs acquire WAF tokens in advance (improves challenge/CAPTCHA UX, required for best Targeted Bot Control/ATP results)
+- Managed rule groups are versioned - can pin a static version or use default (auto-updated); override individual rule actions to Count to test
+
+## AWS Firewall Manager
+
+- Central security policy management across an AWS Organization (requires Organizations + AWS Config enabled in all accounts, admin account designated)
+- Policy types: WAF (web ACLs, incl. first/last rule groups that account owners can't remove), Shield Advanced, VPC security groups (common/audit/usage), Network Firewall, Route 53 Resolver DNS Firewall, third-party firewalls (Palo Alto Cloud NGFW, Fortigate CNF)
+- Automatically applies protections to **new** accounts and resources matching the policy scope (tags, resource types, OUs) - compliance report and auto-remediation <span style="color: red;">EXAM</span>

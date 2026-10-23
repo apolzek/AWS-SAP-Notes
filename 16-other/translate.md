@@ -1,14 +1,21 @@
 # Amazon Translate
 
 - Is a text translation service based in ML
-- Translates text from native language to other languages one word at a time
+- Translates text from native language to other languages using neural machine translation - it translates whole sentences in context, **not** one word at a time
 - Translation process has two parts:
     - Encoder reads the source text => outputs a semantic representation (meaning)
     - Decoder reads in the meaning => writes to the target language
 - Attention mechanism ensures "meaning" is translated
-- Textract is capable to detect the source text language
+- Translate is capable to detect the source text language (`SourceLanguageCode=auto` - uses Amazon Comprehend behind the scenes)
 - Use cases:
     - Multilingual user experience
     - Translate incoming data (social media/news/communications)
-    - Language-independence for other AWS services: we might have other services such as Comprehend, Transcribe and Polly which operate on information; Transcribe will make this services operate in a language independent way. It can used to analyze data stored in S3, RDS, DDB, etc.
+    - Language-independence for other AWS services: we might have other services such as Comprehend, Transcribe and Polly which operate on information; Translate will make this services operate in a language independent way. It can used to analyze data stored in S3, RDS, DDB, etc.
     - Commonly used for integration with other services/Apps/platforms
+- Modes: **real-time** `TranslateText` (up to 10,000 bytes per request) and `TranslateDocument` (Word, Excel, PowerPoint, HTML, text), and **batch** translation jobs on S3 (async, large volumes)
+- **Custom terminology**: CSV/TMX glossary that forces how brand names/technical terms are translated (or not translated) <span style="color: red;">EXAM</span>
+- **Active Custom Translation (ACT)**: use our parallel data (example source/target sentences) to adapt style/domain without training a custom model
+- Settings: formality (formal/informal), profanity masking, brevity
+- 75+ languages; pay per character translated
+- Integrations: Transcribe (subtitles in multiple languages), Comprehend (analyze in one language), Polly (speak the translation), Lex/Connect (multilingual chat), S3 + Lambda event-driven translation
+- Translate vs Bedrock LLMs: Translate = predictable, cheap, terminology control at scale; LLMs = when translation must also rewrite/adapt tone or reasoning is needed
